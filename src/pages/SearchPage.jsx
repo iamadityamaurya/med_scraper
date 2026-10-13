@@ -1,19 +1,231 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
+import Modal from '../components/Modal.jsx'
+import PharmacyCard from '../components/PharmacyCard.jsx'
+import CountSelect from '../components/CountSelect.jsx'
+import ThemeToggle from '../components/ThemeToggle.jsx'
+import { ACCENTS } from '../components/accents.js'
+
+const EMPTY_RESULTS = { oneMg: [], apollo: [], pharmEasy: [], truemed: [], netmed: [] }
+
+/* Per-pharmacy config: how to read each API's fields + which accent to use */
+const PHARMACY_CONFIGS = [
+    {
+        id: '1mg',
+        key: 'oneMg',
+        name: 'Tata 1mg',
+        logoSrc: 'https://marketing-compaigns.s3.ap-south-1.amazonaws.com/emailer/Landing-Pages-2021/Tata-1mg-Announcement/TATA%201mg%20logo.svg',
+        logoPad: 'p-1',
+        accent: 'emerald',
+        size: (p) => p.packSize || p.unitSize,
+        price: (p) => p.specialPrice || p.price,
+        mrp: (p) => p.mrp,
+        discount: (p) => (p.discount || p.discountPercentage ? `${p.discount || p.discountPercentage}% OFF` : null),
+        perUnit: (p) => calculatePricePerUnit(p.packSize || p.unitSize, p.price),
+    },
+    {
+        id: 'apollo',
+        key: 'apollo',
+        name: 'Apollo Pharmacy',
+        logoSrc: 'https://images.apollo247.in/images/ic_logo.png',
+        logoPad: 'p-1.5',
+        accent: 'teal',
+        size: (p) => p.unitSize,
+        price: (p) => p.specialPrice || p.price,
+        mrp: (p) => (p.specialPrice && p.specialPrice !== p.price ? p.price : p.mrp || null),
+        discount: (p) => (p.discountPercentage ? `${p.discountPercentage}% OFF` : null),
+        perUnit: (p) => p.pricePerUnit || null,
+    },
+    {
+        id: 'pharmeasy',
+        key: 'pharmEasy',
+        name: 'PharmEasy',
+        logoSrc: '/pharmeasy.svg',
+        logoPad: 'p-1.5',
+        accent: 'amber',
+        size: (p) => p.measurement,
+        price: (p) => p.price,
+        mrp: (p) => p.mrp,
+        discount: (p) => p.discount || null,
+        perUnit: (p) => calculatePricePerUnit(p.measurement, p.price),
+    },
+    {
+        id: 'truemed',
+        key: 'truemed',
+        name: 'TrueMeds',
+        logoSrc: '/truemed.svg',
+        logoPad: 'p-1.5',
+        accent: 'purple',
+        size: (p) => p.measurement,
+        price: (p) => p.price,
+        mrp: (p) => p.mrp,
+        discount: (p) => (p.discount ? `${p.discount} OFF` : null),
+        perUnit: (p) => calculatePricePerUnit(p.measurement, p.price),
+    },
+    {
+        id: 'netmed',
+        key: 'netmed',
+        name: 'NetMeds',
+        logoSrc: '/netmeds.svg',
+        logoPad: 'p-1',
+        accent: 'cyan',
+        size: (p) => p.package,
+        price: (p) => p.price,
+        mrp: (p) => p.mrp,
+        discount: (p) => (p.discount ? `${p.discount}% OFF` : null),
+        perUnit: (p) => calculatePricePerUnit(p.package, p.price),
+    },
+]
+
+const PHARMACY_MAP = Object.fromEntries(PHARMACY_CONFIGS.map((c) => [c.id, c]))
+
+const SORT_OPTIONS = [
+    { id: 'relevance', label: 'Relevance' },
+    { id: 'discount', label: 'Discount' },
+    { id: 'price', label: 'Price' },
+    { id: 'perUnit', label: 'Per unit' },
+]
+
+const POPULAR_SEARCHES = ['Paracetamol', 'Dolo 650', 'Azithromycin', 'Pantoprazole', 'Cetirizine']
+
+function calculatePricePerUnit(packSize, price) {
+    if (!packSize || !price) return null
+
+    const unitCount = parseInt(packSize.match(/\d+/)?.[0])
+    if (!unitCount || unitCount === 0) return null
+
+    return (price / unitCount).toFixed(2)
+}
+
+function sortProducts(products, criteria, order = 'asc') {
+    if (!products || products.length === 0) return []
+    let sorted = [...products]
+
+    switch (criteria) {
+        case 'price':
+            sorted.sort((a, b) => {
+                const priceA = parseFloat(a.specialPrice || a.price) || 0
+                const priceB = parseFloat(b.specialPrice || b.price) || 0
+                return priceA - priceB
+            })
+            break
+        case 'discount':
+            sorted.sort((a, b) => {
+                const discountA = parseFloat(a.discount || a.discountPercentage) || 0
+                const discountB = parseFloat(b.discount || b.discountPercentage) || 0
+                return discountA - discountB
+            })
+            break
+        case 'perUnit':
+            sorted.sort((a, b) => {
+                const getPrice = (p) => {
+                    const val = p.pricePerUnit || calculatePricePerUnit(p.packSize || p.unitSize || p.measurement || p.package, p.price)
+                    if (!val) return Infinity
+                    const cleanVal = String(val).replace(/[^\d.]/g, '')
+                    return parseFloat(cleanVal) || Infinity
+                }
+                return getPrice(a) - getPrice(b)
+            })
+            break
+        default:
+            break
+    }
+
+    if (order === 'desc') {
+        sorted.reverse()
+    }
+
+    return sorted
+}
+
+/* Card used inside the Compare & Saved modals */
+function DetailCard({ product, source, onBuy, onRemove }) {
+    const config = PHARMACY_MAP[source]
+    const accent = ACCENTS[config?.accent || 'slate']
+    const price = config ? config.price(product) : product.specialPrice || product.price
+    const mrp = config ? config.mrp(product) : product.mrp
+    const discount = config ? config.discount(product) : null
+    const size = config ? config.size(product) : null
+    const perUnit = config ? config.perUnit(product) : null
+
+    return (
+        <div className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-stone-200 p-5 transition-shadow duration-200 ease-out hover:shadow-lg hover:shadow-stone-200/60 dark:border-stone-800 dark:hover:shadow-black/30">
+            <div className={`absolute right-0 top-0 rounded-bl-xl px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-white ${accent.badge}`}>
+                {config?.name || source}
+            </div>
+            <div className="mb-5 flex h-36 items-center justify-center rounded-xl bg-stone-50 p-4 dark:bg-stone-100">
+                {product.image ? (
+                    <img src={product.image} alt={product.name} className="h-full object-contain mix-blend-multiply" loading="lazy" />
+                ) : (
+                    <div className="text-sm text-stone-300 dark:text-stone-500">No image</div>
+                )}
+            </div>
+            <h3 className="min-h-12 break-words text-[15px] font-semibold leading-snug text-stone-900 dark:text-stone-50">{product.name}</h3>
+            <dl className="mt-4 flex-1 space-y-2.5 text-sm">
+                <div className="flex items-start justify-between gap-3 border-b border-stone-50 pb-2.5 dark:border-stone-800">
+                    <dt className="text-stone-500 dark:text-stone-400">Price</dt>
+                    <dd className="text-right">
+                        <span className="font-mono text-lg font-semibold tabular-nums text-stone-900 dark:text-stone-50">₹{price}</span>
+                        {mrp && <span className="ml-2 font-mono text-xs text-stone-400 line-through dark:text-stone-500">₹{mrp}</span>}
+                        {discount && (
+                            <span className="ml-2 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">{discount}</span>
+                        )}
+                    </dd>
+                </div>
+                <div className="flex items-center justify-between border-b border-stone-50 pb-2.5 dark:border-stone-800">
+                    <dt className="text-stone-500 dark:text-stone-400">Pack size</dt>
+                    <dd className="font-medium text-stone-700 dark:text-stone-300">{size || '—'}</dd>
+                </div>
+                {perUnit && (
+                    <div className="flex items-center justify-between">
+                        <dt className="text-stone-500 dark:text-stone-400">Per unit</dt>
+                        <dd className="font-mono text-[13px] tabular-nums text-stone-700 dark:text-stone-300">₹{perUnit}/unit</dd>
+                    </div>
+                )}
+            </dl>
+            {onRemove ? (
+                <div className="mt-5 flex gap-2">
+                    <button
+                        onClick={onBuy}
+                        className="flex-1 rounded-xl bg-emerald-600 py-2.5 text-sm font-semibold text-white transition-[background-color,transform] duration-150 ease-out hover:bg-emerald-700 active:scale-[0.97] dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:hover:text-stone-950"
+                    >
+                        Buy now
+                    </button>
+                    <button
+                        onClick={onRemove}
+                        title="Remove"
+                        aria-label={`Remove ${product.name}`}
+                        className="rounded-xl bg-red-50 px-3.5 text-red-600 transition-colors duration-150 ease-out hover:bg-red-100 active:scale-95 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/20"
+                    >
+                        <svg className="h-[18px] w-[18px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                    </button>
+                </div>
+            ) : (
+                <button
+                    onClick={onBuy}
+                    className="mt-5 w-full rounded-xl bg-stone-900 py-2.5 text-sm font-semibold text-white transition-[background-color,transform] duration-150 ease-out hover:bg-stone-700 active:scale-[0.97] dark:bg-stone-50 dark:text-stone-900 dark:hover:bg-stone-300"
+                >
+                    Buy now
+                </button>
+            )}
+        </div>
+    )
+}
 
 function SearchPage() {
     const [message, setMessage] = useState('paracetamol')
     const [pincode, setPincode] = useState('')
-    const [oneMgProducts, setOneMgProducts] = useState([])
-    const [apolloProducts, setApolloProducts] = useState([])
-    const [pharmEasyProducts, setPharmEasyProducts] = useState([])
-    const [truemedProducts, setTruemedProducts] = useState([])
-    const [netmedProducts, setNetmedProducts] = useState([])
+    const [results, setResults] = useState(EMPTY_RESULTS)
+    const [lastQuery, setLastQuery] = useState('')
     const [maxProduct, setMaxProduct] = useState(5)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
+    const [hasSearched, setHasSearched] = useState(false)
 
-    const [sortBy, setSortBy] = useState('relevance') // 'relevance', 'price', 'discount', 'perUnit'
-    const [sortOrder, setSortOrder] = useState('asc') // 'asc', 'desc'
+    const [sortBy, setSortBy] = useState('relevance')
+    const [sortOrder, setSortOrder] = useState('asc')
 
     const [selectedProducts, setSelectedProducts] = useState([])
     const [savedItems, setSavedItems] = useState([])
@@ -23,85 +235,18 @@ function SearchPage() {
     const [uploading, setUploading] = useState(false)
     const [extractedMedicines, setExtractedMedicines] = useState([])
 
-    // ⭐ Added price per unit calculator for 1mg
-    const calculatePricePerUnit = (packSize, price) => {
-        if (!packSize || !price) return null
-
-        const unitCount = parseInt(packSize.match(/\d+/)?.[0])
-        if (!unitCount || unitCount === 0) return null
-
-        return (price / unitCount).toFixed(2)
-    }
-
-    const sortProducts = (products, criteria, order = 'asc') => {
-        if (!products || products.length === 0) return [];
-        let sorted = [...products];
-
-        switch (criteria) {
-            case 'price':
-                sorted.sort((a, b) => {
-                    const priceA = parseFloat(a.specialPrice || a.price) || 0;
-                    const priceB = parseFloat(b.specialPrice || b.price) || 0;
-                    return priceA - priceB;
-                });
-                break;
-            case 'discount':
-                sorted.sort((a, b) => {
-                    const discountA = parseFloat(a.discount || a.discountPercentage) || 0;
-                    const discountB = parseFloat(b.discount || b.discountPercentage) || 0;
-                    return discountA - discountB; // Base sort: Low to High
-                });
-                break;
-            case 'perUnit':
-                sorted.sort((a, b) => {
-                    const getPrice = (p) => {
-                        const val = p.pricePerUnit || calculatePricePerUnit(p.packSize || p.unitSize || p.measurement || p.package, p.price);
-                        if (!val) return Infinity;
-                        // Remove non-numeric characters except dot
-                        const cleanVal = String(val).replace(/[^\d.]/g, '');
-                        return parseFloat(cleanVal) || Infinity;
-                    };
-                    return getPrice(a) - getPrice(b);
-                });
-                break;
-            default:
-                break;
-        }
-
-        if (order === 'desc') {
-            sorted.reverse();
-        }
-
-        return sorted;
-    };
-
-    const sourceLabel = source => {
-        if (source === '1mg') return 'Tata 1mg'
-        if (source === 'apollo') return 'Apollo'
-        if (source === 'pharmeasy') return 'PharmEasy'
-        if (source === 'truemed') return 'TrueMeds'
-        if (source === 'netmed') return 'NetMeds'
-        return 'Unknown'
-    }
-
-    const sourceBadgeClass = source => {
-        if (source === '1mg') return 'bg-emerald-500'
-        if (source === 'apollo') return 'bg-teal-500'
-        if (source === 'pharmeasy') return 'bg-amber-500'
-        if (source === 'truemed') return 'bg-purple-500'
-        if (source === 'netmed') return 'bg-cyan-500'
-        return 'bg-slate-500'
-    }
+    const hasResults = Object.values(results).some((arr) => arr.length > 0)
+    const totalResults = Object.values(results).reduce((sum, arr) => sum + arr.length, 0)
 
     const handleSelect = (product, source) => {
         const productWithSource = { ...product, source }
-        const isSelected = selectedProducts.some(p => p.name === product.name && p.source === source)
+        const isSelected = selectedProducts.some((p) => p.name === product.name && p.source === source)
 
         if (isSelected) {
-            setSelectedProducts(selectedProducts.filter(p => !(p.name === product.name && p.source === source)))
+            setSelectedProducts(selectedProducts.filter((p) => !(p.name === product.name && p.source === source)))
         } else {
             if (selectedProducts.length >= 3) {
-                alert("You can select up to 3 products at a time.")
+                alert('You can select up to 3 products at a time.')
                 return
             }
             setSelectedProducts([...selectedProducts, productWithSource])
@@ -111,67 +256,73 @@ function SearchPage() {
     const handleSave = () => {
         if (selectedProducts.length === 0) return
 
-        const newItems = selectedProducts.filter(p =>
-            !savedItems.some(s => s.name === p.name && s.source === p.source)
+        const newItems = selectedProducts.filter(
+            (p) => !savedItems.some((s) => s.name === p.name && s.source === p.source)
         )
 
         if (newItems.length === 0) {
-            alert("Selected items are already in your saved list.")
+            alert('Selected items are already in your saved list.')
             return
         }
 
         setSavedItems([...savedItems, ...newItems])
-        setSelectedProducts([]) // Clear selection after saving
+        setSelectedProducts([])
         alert(`Added ${newItems.length} items to your saved list!`)
     }
 
     const removeSavedItem = (product) => {
-        setSavedItems(savedItems.filter(p => !(p.name === product.name && p.source === product.source)))
+        setSavedItems(savedItems.filter((p) => !(p.name === product.name && p.source === product.source)))
     }
 
-    const handleSubmit = async (e) => {
-        e.preventDefault()
-
-        if (!message.trim()) return
+    const runSearch = async (query) => {
+        const q = query.trim()
+        if (!q) return
 
         setLoading(true)
         setError('')
-        setOneMgProducts([])
-        setApolloProducts([])
-        setPharmEasyProducts([])
-        setTruemedProducts([])
-        setNetmedProducts([])
-        setSelectedProducts([]) // Clear selection on new search
+        setHasSearched(true)
+        setLastQuery(q)
+        setResults(EMPTY_RESULTS)
+        setSelectedProducts([])
 
         try {
             const res = await fetch(`${import.meta.env.VITE_API_URL}/api/message`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message, maxProduct }),
+                body: JSON.stringify({ message: q, maxProduct }),
             })
 
             const data = await res.json()
 
             if (data.success) {
-                setOneMgProducts(data.data.oneMg || [])
-                setApolloProducts(data.data.apollo || [])
-                setPharmEasyProducts(data.data.pharmEasy || [])
-                setTruemedProducts(data.data.truemed || [])
-                setNetmedProducts(data.data.netmed || [])
+                setResults({
+                    oneMg: data.data.oneMg || [],
+                    apollo: data.data.apollo || [],
+                    pharmEasy: data.data.pharmEasy || [],
+                    truemed: data.data.truemed || [],
+                    netmed: data.data.netmed || [],
+                })
             } else {
                 setError(data.message)
-                setOneMgProducts([])
-                setApolloProducts(data.data?.apollo || [])
-                setPharmEasyProducts(data.data?.pharmEasy || [])
-                setTruemedProducts(data.data?.truemed || [])
-                setNetmedProducts(data.data?.netmed || [])
+                setResults({
+                    oneMg: [],
+                    apollo: data.data?.apollo || [],
+                    pharmEasy: data.data?.pharmEasy || [],
+                    truemed: data.data?.truemed || [],
+                    netmed: data.data?.netmed || [],
+                })
             }
-        } catch (error) {
-            console.error('Error:', error)
+        } catch (err) {
+            console.error('Error:', err)
             setError('Error fetching data')
         } finally {
             setLoading(false)
         }
+    }
+
+    const handleSubmit = (e) => {
+        e.preventDefault()
+        runSearch(message)
     }
 
     const handlePincodeSubmit = async (e) => {
@@ -186,107 +337,170 @@ function SearchPage() {
                 if (data.success) {
                     alert(`Pincode ${pincode} received!`)
                 }
-            } catch (error) {
-                console.error('Error sending pincode:', error)
+            } catch (err) {
+                console.error('Error sending pincode:', err)
             }
         }
     }
 
     const handleLiveLocation = () => {
         if (!navigator.geolocation) {
-            alert("Geolocation is not supported by your browser");
-            return;
+            alert('Geolocation is not supported by your browser')
+            return
         }
 
         navigator.geolocation.getCurrentPosition(async (position) => {
-            const { latitude, longitude } = position.coords;
+            const { latitude, longitude } = position.coords
 
             try {
-                // 1. Reverse Geocoding to get Pincode
-                let detectedPincode = '';
+                let detectedPincode = ''
                 try {
-                    const nominatimRes = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
-                    const nominatimData = await nominatimRes.json();
+                    const nominatimRes = await fetch(
+                        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`
+                    )
+                    const nominatimData = await nominatimRes.json()
                     if (nominatimData.address && nominatimData.address.postcode) {
-                        detectedPincode = nominatimData.address.postcode;
-                        setPincode(detectedPincode); // Auto-fill input
+                        detectedPincode = nominatimData.address.postcode
+                        setPincode(detectedPincode)
                     }
                 } catch (geoError) {
-                    console.error("Error fetching pincode from coordinates:", geoError);
+                    console.error('Error fetching pincode from coordinates:', geoError)
                 }
 
-                // 2. Send to Backend
                 const res = await fetch(`${import.meta.env.VITE_API_URL}/api/pincode`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         lat: latitude,
                         lon: longitude,
-                        pincode: detectedPincode
+                        pincode: detectedPincode,
                     }),
                 })
                 const data = await res.json()
                 if (data.success) {
-                    alert(`Location received! ${detectedPincode ? `Pincode: ${detectedPincode}` : ''} (Lat: ${latitude}, Lon: ${longitude})`)
+                    alert(
+                        `Location received! ${detectedPincode ? `Pincode: ${detectedPincode}` : ''} (Lat: ${latitude}, Lon: ${longitude})`
+                    )
                 }
-            } catch (error) {
-                console.error('Error sending location:', error)
+            } catch (err) {
+                console.error('Error sending location:', err)
             }
-        }, (error) => {
-            console.error("Error getting location:", error);
-            alert("Unable to retrieve your location");
-        });
+        }, (geoError) => {
+            console.error('Error getting location:', geoError)
+            alert('Unable to retrieve your location')
+        })
     }
 
     const handleImageUpload = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
+        const file = e.target.files[0]
+        if (!file) return
 
-        setUploading(true);
-        const formData = new FormData();
-        formData.append('image', file);
+        setUploading(true)
+        const formData = new FormData()
+        formData.append('image', file)
 
         try {
             const res = await fetch(`${import.meta.env.VITE_API_URL}/api/extract-medicines`, {
                 method: 'POST',
                 body: formData,
-            });
-            const data = await res.json();
+            })
+            const data = await res.json()
 
             if (data.success && data.data && data.data.length > 0) {
-                setExtractedMedicines(data.data);
-                setShowUploadModal(false);
-                // Optional: Auto-search first item
-                // setMessage(data.data[0]);
+                setExtractedMedicines(data.data)
+                setShowUploadModal(false)
             } else {
-                alert("Could not extract medicine names from the image.");
+                alert('Could not extract medicine names from the image.')
             }
-        } catch (error) {
-            console.error("Upload error:", error);
-            alert("Failed to upload image.");
+        } catch (err) {
+            console.error('Upload error:', err)
+            alert('Failed to upload image.')
         } finally {
-            setUploading(false);
+            setUploading(false)
         }
-    };
+    }
 
     return (
-        <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-emerald-100 selection:text-emerald-900 relative">
-            {/* Background decoration */}
-            <div className="fixed inset-0 z-0 pointer-events-none overflow-hidden">
-                <div className="absolute -top-[20%] -left-[10%] w-[50%] h-[50%] rounded-full bg-emerald-100/50 blur-3xl"></div>
-                <div className="absolute top-[20%] -right-[10%] w-[40%] h-[40%] rounded-full bg-teal-100/50 blur-3xl"></div>
-            </div>
+        <div className="min-h-screen bg-stone-50 font-sans text-stone-900 selection:bg-emerald-100 selection:text-emerald-900 dark:bg-stone-950 dark:text-stone-50 dark:selection:bg-emerald-500/20 dark:selection:text-emerald-100">
+            {/* Header */}
+            <header className="sticky top-0 z-40 border-b border-stone-200/70 bg-stone-50/80 backdrop-blur-md dark:border-stone-800 dark:bg-stone-950/80">
+                <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-3 px-4 sm:px-6">
+                    <Link to="/" className="flex shrink-0 items-center gap-2.5">
+                        <img src="/logo.svg" alt="MedScrapper Logo" className="h-8 w-8 object-contain" />
+                        <span className="text-lg font-semibold tracking-tight text-stone-900 dark:text-stone-50">MedScrapper</span>
+                    </Link>
 
-            {/* Extracted Medicines Sidebar (Desktop) */}
+                    <div className="flex items-center gap-2.5">
+                        {/* Pincode */}
+                        <div className="group relative hidden sm:block">
+                            <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                                <svg className="h-4 w-4 text-stone-400 transition-colors duration-150 group-focus-within:text-emerald-600 dark:group-focus-within:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </div>
+                            <input
+                                type="text"
+                                inputMode="numeric"
+                                value={pincode}
+                                onChange={(e) => setPincode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                onKeyDown={handlePincodeSubmit}
+                                placeholder="Pincode"
+                                aria-label="Pincode"
+                                className="w-28 rounded-full border border-stone-200 bg-white py-2 pl-9 pr-3 text-sm font-medium text-stone-700 shadow-sm outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-stone-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-200 dark:placeholder:text-stone-500"
+                            />
+                        </div>
+                        <button
+                            onClick={handleLiveLocation}
+                            title="Use live location"
+                            aria-label="Use live location"
+                            className="hidden h-9 w-9 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-500 shadow-sm transition-[color,border-color,background-color] duration-150 ease-out hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-600 active:scale-95 sm:flex dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400 dark:hover:border-emerald-500/30 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-400"
+                        >
+                            <svg className="h-[18px] w-[18px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                        </button>
+
+                        <ThemeToggle />
+
+                        {/* Saved */}
+                        <button
+                            onClick={() => setShowSavedModal(true)}
+                            className="flex items-center gap-2 rounded-full border border-stone-200 bg-white py-2 pl-4 pr-2.5 text-sm font-medium text-stone-700 shadow-sm transition-[background-color,border-color,transform] duration-150 ease-out hover:bg-stone-50 active:scale-[0.97] dark:border-stone-800 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
+                        >
+                            <svg className="h-4 w-4 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                            </svg>
+                            Saved
+                            {savedItems.length > 0 && (
+                                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-600 px-1.5 font-mono text-[11px] font-semibold text-white">
+                                    {savedItems.length}
+                                </span>
+                            )}
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            {/* Extracted medicines — desktop sidebar */}
             {extractedMedicines.length > 0 && (
-                <div className="hidden xl:block fixed right-8 top-32 w-80 bg-white/90 backdrop-blur-sm rounded-3xl shadow-xl border border-slate-100 p-6 z-40 animate-fade-in">
-                    <div className="flex justify-between items-center mb-4">
-                        <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                            <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                            Extracted Medicines
+                <aside className="fixed right-8 top-24 z-40 hidden w-80 animate-rise rounded-3xl border border-stone-200/70 bg-white/90 p-5 shadow-xl shadow-stone-200/60 backdrop-blur dark:border-stone-800 dark:bg-stone-900/90 dark:shadow-black/30 xl:block">
+                    <div className="mb-3.5 flex items-center justify-between">
+                        <h3 className="flex items-center gap-2 text-sm font-semibold tracking-tight text-stone-900 dark:text-stone-50">
+                            <svg className="h-4.5 w-4.5 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            Extracted medicines
                         </h3>
-                        <button onClick={() => setExtractedMedicines([])} className="text-slate-400 hover:text-red-500 transition-colors">
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        <button
+                            onClick={() => setExtractedMedicines([])}
+                            aria-label="Clear extracted medicines"
+                            className="rounded-full p-1.5 text-stone-400 transition-colors duration-150 hover:bg-stone-100 hover:text-red-500 active:scale-95 dark:hover:bg-stone-800"
+                        >
+                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
                         </button>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -294,309 +508,75 @@ function SearchPage() {
                             <button
                                 key={idx}
                                 onClick={() => setMessage(med)}
-                                className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg text-sm font-medium hover:bg-emerald-100 transition-colors border border-emerald-100 text-left"
+                                className="rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-800 transition-colors duration-150 ease-out hover:bg-emerald-100 active:scale-[0.97] dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:hover:bg-emerald-500/20"
                             >
                                 {med}
                             </button>
                         ))}
                     </div>
-                    <p className="text-xs text-slate-400 mt-4">Click on a medicine to search</p>
-                </div>
+                    <p className="mt-3.5 text-xs text-stone-400 dark:text-stone-500">Click a medicine to load it into search</p>
+                </aside>
             )}
 
-            {/* Compare Modal */}
-            {showCompareModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fade-in">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col animate-fade-in-up">
-                        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                            <h2 className="text-2xl font-bold text-slate-800">Compare Medicines</h2>
-                            <button onClick={() => setShowCompareModal(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
-                                <svg className="w-6 h-6 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                            </button>
-                        </div>
-                        <div className="p-6 overflow-auto">
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                {selectedProducts.map((product, idx) => (
-                                    <div key={idx} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-md transition-all flex flex-col h-full relative overflow-hidden group">
-                                        <div className={`absolute top-0 right-0 px-3 py-1 text-xs font-bold text-white rounded-bl-xl ${sourceBadgeClass(product.source)}`}>
-                                            {sourceLabel(product.source)}
-                                        </div>
-                                        <div className="h-40 flex items-center justify-center mb-6 p-4 bg-slate-50 rounded-xl">
-                                            {product.image ? (
-                                                <img src={product.image} alt={product.name} className="h-full object-contain mix-blend-multiply" />
-                                            ) : (
-                                                <div className="text-slate-300">No Image</div>
-                                            )}
-                                        </div>
-                                        <h3 className="text-lg font-bold text-slate-900 mb-2 min-h-14 break-words">{product.name}</h3>
-                                        <div className="space-y-3 flex-1">
-                                            <div className="flex justify-between items-start py-2 border-b border-slate-50">
-                                                <span className="text-slate-500 text-sm mt-1">Price</span>
-                                                <div className="flex flex-col items-end">
-                                                    <span className="text-xl font-bold text-emerald-600">₹{product.specialPrice || product.price}</span>
-                                                    {(product.mrp || (product.specialPrice && product.specialPrice !== product.price)) && (
-                                                        <span className="text-xs text-slate-400 line-through">
-                                                            ₹{product.mrp || product.price}
-                                                        </span>
-                                                    )}
-                                                    {(product.discount || product.discountPercentage) && (
-                                                        <span className="text-xs font-bold text-green-600">
-                                                            {product.discount || product.discountPercentage}% OFF
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            </div>
-                                            <div className="flex justify-between items-center py-2 border-b border-slate-50">
-                                                <span className="text-slate-500 text-sm">Pack Size</span>
-                                                <span className="font-medium text-slate-700">{product.packSize || product.unitSize || product.measurement || 'N/A'}</span>
-                                            </div>
-                                            {(product.pricePerUnit || calculatePricePerUnit(product.packSize || product.unitSize || product.measurement, product.price)) && (
-                                                <div className="flex justify-between items-center py-2 border-b border-slate-50">
-                                                    <span className="text-slate-500 text-sm">Per Unit</span>
-                                                    <span className="font-medium text-slate-700">
-                                                        {product.pricePerUnit || `₹${calculatePricePerUnit(product.packSize || product.unitSize || product.measurement, product.price)}/unit`}
-                                                    </span>
-                                                </div>
-                                            )}
-                                        </div>
-                                        <button onClick={() => window.open(product.url)} className="w-full mt-6 py-3 bg-slate-900 text-white rounded-xl font-semibold hover:bg-slate-800 transition-colors">
-                                            Buy Now
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Upload Modal */}
-            {showUploadModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fade-in">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col animate-fade-in-up">
-                        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                            <h2 className="text-xl font-bold text-slate-800">Upload Prescription</h2>
-                            <button onClick={() => setShowUploadModal(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
-                                <svg className="w-6 h-6 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                            </button>
-                        </div>
-                        <div className="p-8 flex flex-col items-center justify-center gap-4">
-                            {uploading ? (
-                                <div className="flex flex-col items-center gap-3">
-                                    <svg className="animate-spin h-10 w-10 text-emerald-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                    </svg>
-                                    <p className="text-slate-600 font-medium">Extracting medicines...</p>
-                                </div>
-                            ) : (
-                                <>
-                                    <div className="w-full h-40 border-2 border-dashed border-slate-300 rounded-2xl flex flex-col items-center justify-center bg-slate-50 hover:bg-slate-100 transition-colors cursor-pointer relative">
-                                        <input
-                                            type="file"
-                                            accept="image/*"
-                                            onChange={handleImageUpload}
-                                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                        />
-                                        <svg className="w-10 h-10 text-slate-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                                        <p className="text-sm text-slate-500 font-medium">Click to upload image</p>
-                                    </div>
-                                    <p className="text-xs text-slate-400 text-center">Supported formats: JPG, PNG</p>
-                                </>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            )}
-            {showSavedModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fade-in">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col animate-fade-in-up">
-                        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                            <h2 className="text-2xl font-bold text-slate-800">Saved Medicines ({savedItems.length})</h2>
-                            <button onClick={() => setShowSavedModal(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
-                                <svg className="w-6 h-6 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                            </button>
-                        </div>
-                        <div className="p-6 overflow-auto">
-                            {savedItems.length === 0 ? (
-                                <div className="text-center py-12 text-slate-500">
-                                    <svg className="w-16 h-16 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"></path></svg>
-                                    <p className="text-lg">No saved items yet.</p>
-                                    <p className="text-sm">Search and select medicines to save them here.</p>
-                                </div>
-                            ) : (
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                    {savedItems.map((product, idx) => (
-                                        <div key={idx} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-md transition-all flex flex-col h-full relative overflow-hidden group">
-                                            <div className={`absolute top-0 right-0 px-3 py-1 text-xs font-bold text-white rounded-bl-xl ${sourceBadgeClass(product.source)}`}>
-                                                {sourceLabel(product.source)}
-                                            </div>
-                                            <div className="h-40 flex items-center justify-center mb-6 p-4 bg-slate-50 rounded-xl">
-                                                {product.image ? (
-                                                    <img src={product.image} alt={product.name} className="h-full object-contain mix-blend-multiply" />
-                                                ) : (
-                                                    <div className="text-slate-300">No Image</div>
-                                                )}
-                                            </div>
-                                            <h3 className="text-lg font-bold text-slate-900 mb-2 min-h-14 break-words">{product.name}</h3>
-                                            <div className="space-y-3 flex-1">
-                                                <div className="flex justify-between items-center py-2 border-b border-slate-50">
-                                                    <span className="text-slate-500 text-sm">Price</span>
-                                                    <span className="text-xl font-bold text-emerald-600">₹{product.specialPrice || product.price}</span>
-                                                </div>
-                                                <div className="flex justify-between items-center py-2 border-b border-slate-50">
-                                                    <span className="text-slate-500 text-sm">Pack Size</span>
-                                                    <span className="font-medium text-slate-700">{product.packSize || product.unitSize || product.measurement || 'N/A'}</span>
-                                                </div>
-                                            </div>
-                                            <div className="flex gap-2 mt-6">
-                                                <button onClick={() => window.open(product.url)} className="flex-1 py-2 bg-slate-900 text-white rounded-lg font-semibold hover:bg-slate-800 transition-colors text-sm">
-                                                    Buy Now
-                                                </button>
-                                                <button onClick={() => removeSavedItem(product)} className="px-3 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors" title="Remove">
-                                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            <div className="relative z-10 max-w-[95%] mx-auto px-4 sm:px-6 lg:px-8 py-12">
-
-                {/* TOP BAR: Logo & Actions */}
-                <div className="flex flex-col lg:flex-row items-center justify-between gap-6 mb-8 lg:mb-16">
-                    {/* Logo */}
-                    <div className="inline-flex items-center gap-2 p-3 bg-white rounded-2xl shadow-sm border border-slate-100">
-                        <img src="/logo.svg" alt="MedScrapper Logo" className="w-8 h-8 object-contain" />
-                        <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-emerald-600 to-teal-600">
-                            MedScrapper
-                        </span>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex flex-wrap items-center justify-center lg:justify-end gap-4 w-full lg:w-auto">
-                        {/* Pincode Input */}
-                        <div className="relative group flex items-center gap-2">
-                            <div className="relative">
-                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                    <svg className="h-4 w-4 text-slate-400 group-focus-within:text-emerald-500 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                                    </svg>
-                                </div>
-                                <input
-                                    type="text"
-                                    value={pincode}
-                                    onChange={(e) => setPincode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                                    onKeyDown={handlePincodeSubmit}
-                                    placeholder="Pincode"
-                                    className="w-32 pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-700 placeholder-slate-400 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all outline-none shadow-sm hover:bg-slate-50"
-                                />
-                            </div>
-                            <button
-                                onClick={handleLiveLocation}
-                                className="p-2 bg-white border border-slate-200 rounded-xl text-slate-500 hover:text-emerald-600 hover:border-emerald-200 hover:bg-emerald-50 transition-all shadow-sm"
-                                title="Use Live Location"
-                            >
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                                </svg>
-                            </button>
-                        </div>
-
-                        {/* Saved Items Button */}
-                        <button
-                            onClick={() => setShowSavedModal(true)}
-                            className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl shadow-sm hover:bg-slate-50 transition-all text-slate-700 font-medium"
-                        >
-                            <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"></path></svg>
-                            Saved
-                            {savedItems.length > 0 && (
-                                <span className="bg-emerald-600 text-white text-xs font-bold px-2 py-0.5 rounded-full">{savedItems.length}</span>
-                            )}
-                        </button>
-                    </div>
-                </div>
-
-                {/* HERO SECTION: Title & Description */}
-                <div className="text-center max-w-4xl mx-auto mb-10 lg:mb-14">
-                    <h1 className="text-3xl md:text-5xl lg:text-6xl font-extrabold text-slate-900 tracking-tight mb-4 lg:mb-6">
-                        Find the Best Medicine Prices
+            <main className="mx-auto max-w-6xl px-4 pb-24 pt-10 sm:px-6 md:pt-14">
+                {/* Hero + search */}
+                <section className="mx-auto max-w-3xl text-center">
+                    <h1 className="font-serif text-4xl tracking-tight text-stone-900 md:text-[3.4rem] md:leading-[1.1] dark:text-stone-50">
+                        Find the <em className="italic text-emerald-700 dark:text-emerald-400">lowest price</em>
                     </h1>
-                    <p className="text-base md:text-lg text-slate-600 max-w-2xl mx-auto mb-6 lg:mb-8">
-                        Compare prices across top pharmacies like 1mg and Apollo to ensure you get the best deal for your health.
+                    <p className="mt-3 text-stone-600 dark:text-stone-400">
+                        Live listings from five pharmacies, ranked however you like.
                     </p>
-                </div>
 
-                {/* SEARCH SECTION */}
-                <div className="max-w-3xl mx-auto mb-8">
-                    <div className="bg-white rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100 p-2">
-                        <form onSubmit={handleSubmit} className="flex flex-col md:flex-row gap-4 md:gap-2">
-                            <div className="flex-1 relative group w-full">
-                                <div className="absolute inset-y-0 left-0 pl-5 flex items-center pointer-events-none">
-                                    <svg className="h-5 w-5 text-slate-400 group-focus-within:text-emerald-500 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    <div className="mt-8 rounded-[1.75rem] border border-stone-200/70 bg-white p-2 shadow-xl shadow-stone-200/60 dark:border-stone-800 dark:bg-stone-900 dark:shadow-black/20">
+                        <form onSubmit={handleSubmit} className="flex flex-col gap-2 md:flex-row md:items-center">
+                            <div className="group relative w-full flex-1">
+                                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-4">
+                                    <svg className="h-[18px] w-[18px] text-stone-400 transition-colors duration-150 group-focus-within:text-emerald-600 dark:group-focus-within:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                                     </svg>
                                 </div>
                                 <input
                                     type="text"
                                     value={message}
                                     onChange={(e) => setMessage(e.target.value)}
-                                    placeholder="Search for medicines..."
-                                    className="w-full pl-12 pr-6 py-4 bg-slate-50/50 md:bg-transparent border border-slate-100 md:border-none rounded-3xl text-base md:text-lg text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-emerald-100 focus:bg-white md:focus:bg-slate-50 transition-all outline-none shadow-sm md:shadow-none"
+                                    placeholder="Search medicines…"
+                                    aria-label="Search medicines"
+                                    className="h-12 w-full rounded-[1.25rem] bg-stone-50 pl-11 pr-4 text-base text-stone-900 outline-none transition-[background-color,box-shadow] duration-150 placeholder:text-stone-400 focus:bg-white focus:ring-2 focus:ring-emerald-500/25 dark:bg-stone-800/60 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:bg-stone-800"
                                 />
                             </div>
 
-                            <div className="hidden md:block w-px bg-slate-100 mx-2"></div>
+                            <div className="hidden w-px self-stretch bg-stone-100 md:mx-1 md:block dark:bg-stone-800" />
 
-                            <div className="flex items-center gap-3 w-full md:w-auto">
-                                {/* Left Group: Results + Camera (50% on mobile) */}
-                                <div className="flex items-center gap-2 w-1/2 md:w-auto">
-                                    <div className="relative flex-1 md:min-w-[90px]">
-                                        <select
-                                            value={maxProduct}
-                                            onChange={(e) => setMaxProduct(Number(e.target.value))}
-                                            className="w-full h-12 appearance-none pl-5 pr-8 bg-slate-50 border border-slate-100 rounded-2xl text-slate-700 font-medium focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all cursor-pointer hover:bg-slate-100 text-sm shadow-sm"
-                                        >
-                                            {[...Array(10)].map((_, i) => (
-                                                <option key={i + 1} value={i + 1}>
-                                                    {i + 1} {i + 1 === 1 ? 'Result' : 'Results'}
-                                                </option>
-                                            ))}
-                                        </select>
-                                        <div className="absolute inset-y-0 right-0 pr-2 flex items-center pointer-events-none">
-                                            <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path>
-                                            </svg>
-                                        </div>
-                                    </div>
+                            <div className="flex items-center gap-2">
+                                <CountSelect
+                                    value={maxProduct}
+                                    onChange={setMaxProduct}
+                                    className="w-1/2 md:w-auto"
+                                />
 
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowUploadModal(true)}
-                                        className="h-12 w-12 bg-slate-50 border border-slate-100 hover:bg-white text-slate-600 rounded-2xl shadow-sm hover:shadow-md transition-all flex items-center justify-center flex-none"
-                                        title="Upload Prescription"
-                                    >
-                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-                                    </button>
-                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowUploadModal(true)}
+                                    title="Upload prescription"
+                                    aria-label="Upload prescription"
+                                    className="flex h-12 w-12 flex-none items-center justify-center rounded-2xl bg-stone-50 text-stone-600 outline-none transition-[background-color,box-shadow,transform] duration-150 ease-out hover:bg-white hover:shadow-md focus-visible:ring-2 focus-visible:ring-emerald-500/25 active:scale-95 dark:bg-stone-800/60 dark:text-stone-300 dark:hover:bg-stone-800"
+                                >
+                                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    </svg>
+                                </button>
 
-                                {/* Right Group: Search Button (50% on mobile) */}
                                 <button
                                     type="submit"
                                     disabled={loading}
-                                    className="h-12 px-4 bg-emerald-500 hover:bg-emerald-600 text-white text-base font-semibold rounded-2xl shadow-lg shadow-emerald-500/30 hover:shadow-emerald-600/40 active:scale-95 transition-all disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2 w-1/2 md:w-auto md:flex-none md:min-w-[140px]"
+                                    className="h-12 w-1/2 flex-none rounded-2xl bg-emerald-600 px-6 text-base font-semibold text-white shadow-lg shadow-emerald-600/25 outline-none transition-[background-color,transform,box-shadow] duration-150 ease-out hover:bg-emerald-700 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-70 dark:bg-emerald-500 dark:shadow-emerald-500/20 dark:hover:bg-emerald-400 dark:hover:text-stone-950 md:w-auto md:min-w-[120px]"
                                 >
                                     {loading ? (
-                                        <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        <svg className="mx-auto h-5 w-5 animate-spin text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                                         </svg>
                                     ) : (
                                         'Search'
@@ -606,16 +586,24 @@ function SearchPage() {
                         </form>
                     </div>
 
-                    {/* Extracted Medicines List (Mobile/Tablet) */}
+                    {/* Extracted medicines — inline below search on smaller screens */}
                     {extractedMedicines.length > 0 && (
-                        <div className="mt-6 bg-white rounded-2xl shadow-sm border border-slate-100 p-6 animate-fade-in xl:hidden">
-                            <div className="flex justify-between items-center mb-4">
-                                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                                    <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                                    Extracted Medicines
+                        <div className="mt-5 animate-rise rounded-3xl border border-stone-200/70 bg-white p-5 text-left shadow-sm dark:border-stone-800 dark:bg-stone-900 xl:hidden">
+                            <div className="mb-3.5 flex items-center justify-between">
+                                <h3 className="flex items-center gap-2 text-sm font-semibold tracking-tight text-stone-900 dark:text-stone-50">
+                                    <svg className="h-4.5 w-4.5 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                    </svg>
+                                    Extracted medicines
                                 </h3>
-                                <button onClick={() => setExtractedMedicines([])} className="text-slate-400 hover:text-red-500 transition-colors">
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                <button
+                                    onClick={() => setExtractedMedicines([])}
+                                    aria-label="Clear extracted medicines"
+                                    className="rounded-full p-1.5 text-stone-400 transition-colors duration-150 hover:bg-stone-100 hover:text-red-500 active:scale-95 dark:hover:bg-stone-800"
+                                >
+                                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
                                 </button>
                             </div>
                             <div className="flex flex-wrap gap-2">
@@ -623,606 +611,253 @@ function SearchPage() {
                                     <button
                                         key={idx}
                                         onClick={() => setMessage(med)}
-                                        className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg text-sm font-medium hover:bg-emerald-100 transition-colors border border-emerald-100"
+                                        className="rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-800 transition-colors duration-150 ease-out hover:bg-emerald-100 active:scale-[0.97] dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:hover:bg-emerald-500/20"
                                     >
                                         {med}
                                     </button>
                                 ))}
                             </div>
-                            <p className="text-xs text-slate-400 mt-3">Click on a medicine to search</p>
+                            <p className="mt-3 text-xs text-stone-400 dark:text-stone-500">Click a medicine to load it into search</p>
                         </div>
                     )}
-                </div>
+                </section>
 
-                {/* ACTION BUTTONS */}
-                {selectedProducts.length > 0 && (
-                    <div className="flex justify-center gap-4 mb-12 animate-fade-in">
-                        <button
-                            onClick={() => setShowCompareModal(true)}
-                            className="px-6 py-3 bg-slate-900 text-white font-semibold rounded-xl shadow-lg hover:bg-slate-800 transition-all flex items-center gap-2"
-                        >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
-                            Compare ({selectedProducts.length})
-                        </button>
-                        <button
-                            onClick={handleSave}
-                            className="px-6 py-3 bg-white text-slate-700 border border-slate-200 font-semibold rounded-xl shadow-sm hover:bg-slate-50 transition-all flex items-center gap-2"
-                        >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"></path></svg>
-                            Save Selection
-                        </button>
-                    </div>
-                )}
-
-                {/* ERROR MESSAGE */}
+                {/* Error */}
                 {error && (
-                    <div className="max-w-3xl mx-auto mb-8 animate-fade-in">
-                        <div className="p-4 bg-red-50 border border-red-100 rounded-2xl flex items-center gap-3 text-red-700">
-                            <svg className="w-6 h-6 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    <div className="mx-auto mt-8 max-w-3xl animate-rise">
+                        <div className="flex items-center gap-3 rounded-2xl border border-red-100 bg-red-50 p-4 text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
+                            <svg className="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                             </svg>
-                            <span className="font-medium">{error}</span>
+                            <span className="text-sm font-medium">{error}</span>
                         </div>
                     </div>
                 )}
 
-                {/* RESULTS GRID */}
-                {(oneMgProducts.length > 0 || apolloProducts.length > 0 || pharmEasyProducts.length > 0 || truemedProducts.length > 0 || netmedProducts.length > 0) && (
+                {/* Loading skeletons */}
+                {loading && !hasResults && (
+                    <div className="mt-12 flex gap-6 overflow-hidden" aria-hidden>
+                        {[0, 1, 2].map((i) => (
+                            <div
+                                key={i}
+                                className="h-96 w-[85vw] flex-shrink-0 animate-pulse rounded-3xl border border-stone-200/70 bg-white md:w-[440px] dark:border-stone-800 dark:bg-stone-900"
+                                style={{ animationDelay: `${i * 120}ms` }}
+                            >
+                                <div className="h-16 border-b border-stone-100 bg-stone-50 dark:border-stone-800 dark:bg-stone-800/40" />
+                                <div className="space-y-5 p-6">
+                                    {[0, 1, 2, 3].map((j) => (
+                                        <div key={j} className="flex items-center gap-4">
+                                            <div className="h-11 w-11 rounded-xl bg-stone-100 dark:bg-stone-800" />
+                                            <div className="flex-1 space-y-2">
+                                                <div className="h-3.5 w-3/4 rounded-full bg-stone-100 dark:bg-stone-800" />
+                                                <div className="h-3 w-1/3 rounded-full bg-stone-100 dark:bg-stone-800" />
+                                            </div>
+                                            <div className="h-3.5 w-12 rounded-full bg-stone-100 dark:bg-stone-800" />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {/* Empty state before first search */}
+                {!hasSearched && !loading && (
+                    <section className="mx-auto mt-14 max-w-3xl animate-rise">
+                        <div className="rounded-3xl border border-dashed border-stone-300/80 bg-white/60 px-6 py-14 text-center dark:border-stone-700 dark:bg-stone-900/40">
+                            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                </svg>
+                            </div>
+                            <h2 className="mt-5 text-lg font-semibold tracking-tight text-stone-900 dark:text-stone-50">
+                                Search any medicine to see live prices
+                            </h2>
+                            <p className="mx-auto mt-1.5 max-w-sm text-sm text-stone-500 dark:text-stone-400">
+                                Or try one of the common searches below to see how it works.
+                            </p>
+                            <div className="mt-6 flex flex-wrap justify-center gap-2">
+                                {POPULAR_SEARCHES.map((term) => (
+                                    <button
+                                        key={term}
+                                        onClick={() => {
+                                            setMessage(term)
+                                            runSearch(term)
+                                        }}
+                                        className="rounded-full border border-stone-200 bg-white px-4 py-2 text-sm font-medium text-stone-700 shadow-sm transition-[background-color,border-color,transform] duration-150 ease-out hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-800 active:scale-[0.97] dark:border-stone-700/80 dark:bg-stone-900 dark:text-stone-300 dark:hover:border-emerald-500/30 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-300"
+                                    >
+                                        {term}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </section>
+                )}
+
+                {/* Results */}
+                {hasResults && !loading && (
                     <>
-                        {/* SORTING CONTROLS */}
-                        <div className="flex flex-wrap justify-center gap-3 mb-8 animate-fade-in">
-                            <span className="text-slate-500 font-medium self-center mr-2">Sort by:</span>
-                            <button
-                                onClick={() => {
-                                    setSortBy('relevance');
-                                    setSortOrder('asc');
-                                }}
-                                className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${sortBy === 'relevance'
-                                    ? 'bg-slate-900 text-white shadow-md'
-                                    : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-                                    }`}
-                            >
-                                Relevance
-                            </button>
-                            <button
-                                onClick={() => setSortBy('discount')}
-                                className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${sortBy === 'discount'
-                                    ? 'bg-emerald-600 text-white shadow-md'
-                                    : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-                                    }`}
-                            >
-                                Discount %
-                            </button>
-                            <button
-                                onClick={() => setSortBy('price')}
-                                className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${sortBy === 'price'
-                                    ? 'bg-emerald-600 text-white shadow-md'
-                                    : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-                                    }`}
-                            >
-                                Price (Low to High)
-                            </button>
-                            <button
-                                onClick={() => setSortBy('perUnit')}
-                                className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${sortBy === 'perUnit'
-                                    ? 'bg-emerald-600 text-white shadow-md'
-                                    : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-                                    }`}
-                            >
-                                Price per Unit
-                            </button>
+                        {/* Results summary + sort */}
+                        <div className="mt-14 flex flex-wrap items-center justify-between gap-4">
+                            <p className="text-sm text-stone-500 dark:text-stone-400">
+                                <span className="font-mono font-medium tabular-nums text-stone-900 dark:text-stone-100">{totalResults}</span>{' '}
+                                listings for <span className="font-medium text-stone-900 dark:text-stone-100">“{lastQuery}”</span>
+                            </p>
 
-                            {/* Order Toggle */}
-                            {sortBy !== 'relevance' && (
-                                <button
-                                    onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
-                                    className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 transition-all flex items-center gap-1"
-                                    title={sortOrder === 'asc' ? "Ascending Order" : "Descending Order"}
-                                >
-                                    <span className="text-sm font-semibold">{sortOrder === 'asc' ? 'Asc' : 'Desc'}</span>
-                                    <svg className={`w-4 h-4 transition-transform ${sortOrder === 'desc' ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12"></path>
-                                    </svg>
-                                </button>
-                            )}
+                            <div className="flex items-center gap-2">
+                                <div className="flex rounded-full bg-stone-100/90 p-1 dark:bg-stone-800/70">
+                                    {SORT_OPTIONS.map((option) => (
+                                        <button
+                                            key={option.id}
+                                            onClick={() => {
+                                                setSortBy(option.id)
+                                                if (option.id === 'relevance') setSortOrder('asc')
+                                            }}
+                                            className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition-[background-color,color,box-shadow] duration-150 ease-out active:scale-[0.97] ${
+                                                sortBy === option.id
+                                                    ? 'bg-white text-stone-900 shadow-sm dark:bg-stone-950 dark:text-stone-100'
+                                                    : 'text-stone-500 hover:text-stone-800 dark:text-stone-400 dark:hover:text-stone-200'
+                                            }`}
+                                        >
+                                            {option.label}
+                                        </button>
+                                    ))}
+                                </div>
+                                {sortBy !== 'relevance' && (
+                                    <button
+                                        onClick={() => setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
+                                        title={sortOrder === 'asc' ? 'Ascending — click for descending' : 'Descending — click for ascending'}
+                                        className="flex h-9 w-9 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-500 shadow-sm transition-[color,transform,background-color] duration-150 ease-out hover:bg-stone-50 hover:text-stone-800 active:scale-95 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+                                    >
+                                        <svg
+                                            className={`h-4 w-4 transition-transform duration-200 ease-out ${sortOrder === 'desc' ? 'rotate-180' : ''}`}
+                                            fill="none"
+                                            stroke="currentColor"
+                                            viewBox="0 0 24 24"
+                                        >
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12" />
+                                        </svg>
+                                    </button>
+                                )}
+                            </div>
                         </div>
 
-                        <div className="flex overflow-x-auto snap-x snap-mandatory gap-6 pb-8 animate-fade-in scrollbar-hide">
-
-                            {/* 1mg RESULTS */}
-                            {oneMgProducts.length > 0 && (
-                                <div className="min-w-[85vw] md:min-w-[450px] lg:min-w-[500px] snap-center flex-shrink-0 bg-white rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden flex flex-col">
-                                    <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-16 h-10 flex items-center justify-center">
-                                                <img
-                                                    src="https://marketing-compaigns.s3.ap-south-1.amazonaws.com/emailer/Landing-Pages-2021/Tata-1mg-Announcement/TATA%201mg%20logo.svg"
-                                                    alt="Tata 1mg"
-                                                    className="w-full h-full object-contain"
-                                                />
-                                            </div>
-                                            <h2 className="text-xl font-bold text-slate-800">Tata 1mg</h2>
-                                        </div>
-                                        <span className="px-3 py-1 bg-slate-100 text-slate-600 text-xs font-semibold rounded-full uppercase tracking-wider">
-                                            {oneMgProducts.length} Results
-                                        </span>
+                        {/* Pharmacy rails */}
+                        <div className="mt-6 flex snap-x snap-mandatory gap-6 overflow-x-auto pb-6 scrollbar-hide">
+                            {PHARMACY_CONFIGS.map((config) => {
+                                const products = results[config.key]
+                                if (!products || products.length === 0) return null
+                                return (
+                                    <div key={config.id} className="animate-rise">
+                                        <PharmacyCard
+                                            config={config}
+                                            products={sortProducts(products, sortBy, sortOrder)}
+                                            selectedProducts={selectedProducts}
+                                            onSelect={handleSelect}
+                                        />
                                     </div>
-
-                                    <div className="flex-1">
-                                        <table className="w-full text-left">
-                                            <thead>
-                                                <tr className="border-b border-slate-100 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                                                    <th className="px-6 py-4 w-12">Select</th>
-                                                    <th className="px-6 py-4">Medicine</th>
-                                                    <th className="px-6 py-4">Price</th>
-                                                    <th className="px-6 py-4">Action</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-slate-50">
-                                                {sortProducts(oneMgProducts, sortBy, sortOrder).map((product, idx) => (
-                                                    <tr key={idx} className="group hover:bg-slate-50/80 transition-colors">
-                                                        <td className="px-6 py-4">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={selectedProducts.some(p => p.name === product.name && p.source === '1mg')}
-                                                                onChange={() => handleSelect(product, '1mg')}
-                                                                className="w-5 h-5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
-                                                            />
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <div className="flex items-center gap-4">
-                                                                {product.image ? (
-                                                                    <div className="w-12 h-12 rounded-lg border border-slate-100 bg-white p-1 shrink-0">
-                                                                        <img src={product.image} alt={product.name} className="w-full h-full object-contain" />
-                                                                    </div>
-                                                                ) : (
-                                                                    <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400">
-                                                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                                                                    </div>
-                                                                )}
-                                                                <div className="flex-1 min-w-0">
-                                                                    <div className="font-semibold text-slate-900 group-hover:text-emerald-700 transition-colors break-words">
-                                                                        {product.name}
-                                                                    </div>
-                                                                    <div className="text-sm text-slate-500 mt-0.5">
-                                                                        {product.packSize || product.unitSize}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <div className="flex flex-col">
-                                                                <span className="text-lg font-bold text-slate-900">₹{product.price}</span>
-                                                                {product.mrp && (
-                                                                    <span className="text-xs text-slate-400 line-through">₹{product.mrp}</span>
-                                                                )}
-                                                                {(product.discount || product.discountPercentage) && (
-                                                                    <span className="text-xs font-medium text-green-600">
-                                                                        {product.discount || product.discountPercentage}% OFF
-                                                                    </span>
-                                                                )}
-                                                                <span className="text-[10px] text-slate-400 mt-1">
-                                                                    {calculatePricePerUnit(product.packSize || product.unitSize, product.price)
-                                                                        ? `₹${calculatePricePerUnit(product.packSize || product.unitSize, product.price)}/unit`
-                                                                        : ''}
-                                                                </span>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <button
-                                                                onClick={() => window.open(product.url)}
-                                                                className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
-                                                                title="View on 1mg"
-                                                            >
-                                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-                                                                </svg>
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* APOLLO RESULTS */}
-                            {apolloProducts.length > 0 && (
-                                <div className="min-w-[85vw] md:min-w-[450px] lg:min-w-[500px] snap-center flex-shrink-0 bg-white rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden flex flex-col">
-                                    <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-16 h-10 flex items-center justify-center">
-                                                <img
-                                                    src="https://images.apollo247.in/images/ic_logo.png"
-                                                    alt="Apollo Pharmacy"
-                                                    className="w-full h-full object-contain"
-                                                />
-                                            </div>
-                                            <h2 className="text-xl font-bold text-slate-800">Apollo Pharmacy</h2>
-                                        </div>
-                                        <span className="px-3 py-1 bg-slate-100 text-slate-600 text-xs font-semibold rounded-full uppercase tracking-wider">
-                                            {apolloProducts.length} Results
-                                        </span>
-                                    </div>
-
-                                    <div className="flex-1">
-                                        <table className="w-full text-left">
-                                            <thead>
-                                                <tr className="border-b border-slate-100 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                                                    <th className="px-6 py-4 w-12">Select</th>
-                                                    <th className="px-6 py-4">Medicine</th>
-                                                    <th className="px-6 py-4">Price</th>
-                                                    <th className="px-6 py-4">Action</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-slate-50">
-                                                {sortProducts(apolloProducts, sortBy, sortOrder).map((product, idx) => (
-                                                    <tr key={idx} className="group hover:bg-slate-50/80 transition-colors">
-                                                        <td className="px-6 py-4">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={selectedProducts.some(p => p.name === product.name && p.source === 'apollo')}
-                                                                onChange={() => handleSelect(product, 'apollo')}
-                                                                className="w-5 h-5 rounded border-slate-300 text-teal-600 focus:ring-teal-500 cursor-pointer"
-                                                            />
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <div className="flex items-center gap-4">
-                                                                {product.image ? (
-                                                                    <div className="w-12 h-12 rounded-lg border border-slate-100 bg-white p-1 shrink-0">
-                                                                        <img src={product.image} alt={product.name} className="w-full h-full object-contain" />
-                                                                    </div>
-                                                                ) : (
-                                                                    <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400">
-                                                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                                                                    </div>
-                                                                )}
-                                                                <div className="flex-1 min-w-0">
-                                                                    <div className="font-semibold text-slate-900 group-hover:text-teal-700 transition-colors break-words">
-                                                                        {product.name}
-                                                                    </div>
-                                                                    <div className="text-sm text-slate-500 mt-0.5">
-                                                                        {product.unitSize}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <div className="flex flex-col">
-                                                                <span className="text-lg font-bold text-slate-900">₹{product.specialPrice || product.price}</span>
-                                                                {product.specialPrice && product.specialPrice !== product.price && (
-                                                                    <span className="text-xs text-slate-400 line-through">₹{product.price}</span>
-                                                                )}
-                                                                {product.discountPercentage && (
-                                                                    <span className="text-xs font-medium text-green-600">
-                                                                        {product.discountPercentage}% OFF
-                                                                    </span>
-                                                                )}
-                                                                <span className="text-[10px] text-slate-400 mt-1">
-                                                                    {product.pricePerUnit}
-                                                                </span>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <button
-                                                                onClick={() => window.open(product.url)}
-                                                                className="p-2 text-teal-600 hover:bg-teal-50 rounded-lg transition-colors"
-                                                                title="View on Apollo"
-                                                            >
-                                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-                                                                </svg>
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* PHARMEASY RESULTS */}
-                            {pharmEasyProducts.length > 0 && (
-                                <div className="min-w-[85vw] md:min-w-[450px] lg:min-w-[500px] snap-center flex-shrink-0 bg-white rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden flex flex-col">
-                                    <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-16 h-10 flex items-center justify-center">
-                                                <img
-                                                    src="/pharmeasy.svg"
-                                                    alt="PharmEasy"
-                                                    className="w-full h-full object-contain"
-                                                />
-                                            </div>
-                                            <h2 className="text-xl font-bold text-slate-800">PharmEasy</h2>
-                                        </div>
-                                        <span className="px-3 py-1 bg-slate-100 text-slate-600 text-xs font-semibold rounded-full uppercase tracking-wider">
-                                            {pharmEasyProducts.length} Results
-                                        </span>
-                                    </div>
-
-                                    <div className="flex-1">
-                                        <table className="w-full text-left">
-                                            <thead>
-                                                <tr className="border-b border-slate-100 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                                                    <th className="px-6 py-4 w-12">Select</th>
-                                                    <th className="px-6 py-4">Medicine</th>
-                                                    <th className="px-6 py-4">Price</th>
-                                                    <th className="px-6 py-4">Action</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-slate-50">
-                                                {sortProducts(pharmEasyProducts, sortBy, sortOrder).map((product, idx) => (
-                                                    <tr key={idx} className="group hover:bg-slate-50/80 transition-colors">
-                                                        <td className="px-6 py-4">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={selectedProducts.some(p => p.name === product.name && p.source === 'pharmeasy')}
-                                                                onChange={() => handleSelect(product, 'pharmeasy')}
-                                                                className="w-5 h-5 rounded border-slate-300 text-amber-600 focus:ring-amber-500 cursor-pointer"
-                                                            />
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <div className="flex items-center gap-4">
-                                                                {product.image ? (
-                                                                    <div className="w-12 h-12 rounded-lg border border-slate-100 bg-white p-1 shrink-0">
-                                                                        <img src={product.image} alt={product.name} className="w-full h-full object-contain" />
-                                                                    </div>
-                                                                ) : (
-                                                                    <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400">
-                                                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                                                                    </div>
-                                                                )}
-                                                                <div className="flex-1 min-w-0">
-                                                                    <div className="font-semibold text-slate-900 group-hover:text-amber-700 transition-colors break-words">
-                                                                        {product.name}
-                                                                    </div>
-                                                                    <div className="text-sm text-slate-500 mt-0.5">
-                                                                        {product.measurement || 'N/A'}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <div className="flex flex-col">
-                                                                <span className="text-lg font-bold text-slate-900">₹{product.price}</span>
-                                                                {product.mrp && (
-                                                                    <span className="text-xs text-slate-400 line-through">₹{product.mrp}</span>
-                                                                )}
-                                                                {product.discount && (
-                                                                    <span className="text-xs font-medium text-green-600">
-                                                                        {product.discount}
-                                                                    </span>
-                                                                )}
-                                                                <span className="text-[10px] text-slate-400 mt-1">
-                                                                    {calculatePricePerUnit(product.measurement, product.price)
-                                                                        ? `₹${calculatePricePerUnit(product.measurement, product.price)}/unit`
-                                                                        : ''}
-                                                                </span>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <button
-                                                                onClick={() => window.open(product.url)}
-                                                                className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
-                                                                title="View on PharmEasy"
-                                                            >
-                                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-                                                                </svg>
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* TRUEMEDS RESULTS */}
-                            {truemedProducts.length > 0 && (
-                                <div className="min-w-[85vw] md:min-w-[450px] lg:min-w-[500px] snap-center flex-shrink-0 bg-white rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden flex flex-col">
-                                    <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-16 h-10 flex items-center justify-center">
-                                                <img
-                                                    src="/truemed.svg"
-                                                    alt="TrueMeds"
-                                                    className="w-full h-full object-contain"
-                                                />
-                                            </div>
-                                            <h2 className="text-xl font-bold text-slate-800">TrueMeds</h2>
-                                        </div>
-                                        <span className="px-3 py-1 bg-slate-100 text-slate-600 text-xs font-semibold rounded-full uppercase tracking-wider">
-                                            {truemedProducts.length} Results
-                                        </span>
-                                    </div>
-
-                                    <div className="flex-1">
-                                        <table className="w-full text-left">
-                                            <thead>
-                                                <tr className="border-b border-slate-100 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                                                    <th className="px-6 py-4 w-12">Select</th>
-                                                    <th className="px-6 py-4">Medicine</th>
-                                                    <th className="px-6 py-4">Price</th>
-                                                    <th className="px-6 py-4">Action</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-slate-50">
-                                                {sortProducts(truemedProducts, sortBy, sortOrder).map((product, idx) => (
-                                                    <tr key={idx} className="group hover:bg-slate-50/80 transition-colors">
-                                                        <td className="px-6 py-4">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={selectedProducts.some(p => p.name === product.name && p.source === 'truemed')}
-                                                                onChange={() => handleSelect(product, 'truemed')}
-                                                                className="w-5 h-5 rounded border-slate-300 text-purple-600 focus:ring-purple-500 cursor-pointer"
-                                                            />
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <div className="flex items-center gap-4">
-                                                                {product.image ? (
-                                                                    <div className="w-12 h-12 rounded-lg border border-slate-100 bg-white p-1 shrink-0">
-                                                                        <img src={product.image} alt={product.name} className="w-full h-full object-contain" />
-                                                                    </div>
-                                                                ) : (
-                                                                    <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400">
-                                                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                                                                    </div>
-                                                                )}
-                                                                <div className="flex-1 min-w-0">
-                                                                    <div className="font-semibold text-slate-900 group-hover:text-purple-700 transition-colors break-words">
-                                                                        {product.name}
-                                                                    </div>
-                                                                    <div className="text-sm text-slate-500 mt-0.5">
-                                                                        {product.measurement || 'N/A'}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <div className="flex flex-col">
-                                                                <span className="text-lg font-bold text-slate-900">₹{product.price}</span>
-                                                                {product.mrp && (
-                                                                    <span className="text-xs text-slate-400 line-through">₹{product.mrp}</span>
-                                                                )}
-                                                                {product.discount && (
-                                                                    <span className="text-xs font-medium text-green-600">
-                                                                        {product.discount} OFF
-                                                                    </span>
-                                                                )}
-                                                                <span className="text-[10px] text-slate-400 mt-1">
-                                                                    {calculatePricePerUnit(product.measurement, product.price)
-                                                                        ? `₹${calculatePricePerUnit(product.measurement, product.price)}/unit`
-                                                                        : ''}
-                                                                </span>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <button
-                                                                onClick={() => product.url && window.open(product.url)}
-                                                                className="p-2 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"
-                                                                title="View on TrueMeds"
-                                                                disabled={!product.url}
-                                                            >
-                                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-                                                                </svg>
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* NETMEDS RESULTS */}
-                            {netmedProducts.length > 0 && (
-                                <div className="min-w-[85vw] md:min-w-[450px] lg:min-w-[500px] snap-center flex-shrink-0 bg-white rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden flex flex-col">
-                                    <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-16 h-10 flex items-center justify-center">
-                                                <img
-                                                    src="/netmeds.svg"
-                                                    alt="NetMeds"
-                                                    className="w-full h-full object-contain"
-                                                />
-                                            </div>
-                                            <h2 className="text-xl font-bold text-slate-800">NetMeds</h2>
-                                        </div>
-                                        <span className="px-3 py-1 bg-slate-100 text-slate-600 text-xs font-semibold rounded-full uppercase tracking-wider">
-                                            {netmedProducts.length} Results
-                                        </span>
-                                    </div>
-
-                                    <div className="flex-1">
-                                        <table className="w-full text-left">
-                                            <thead>
-                                                <tr className="border-b border-slate-100 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                                                    <th className="px-6 py-4 w-12">Select</th>
-                                                    <th className="px-6 py-4">Medicine</th>
-                                                    <th className="px-6 py-4">Price</th>
-                                                    <th className="px-6 py-4">Action</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-slate-50">
-                                                {sortProducts(netmedProducts, sortBy, sortOrder).map((product, idx) => (
-                                                    <tr key={idx} className="group hover:bg-slate-50/80 transition-colors">
-                                                        <td className="px-6 py-4">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={selectedProducts.some(p => p.name === product.name && p.source === 'netmed')}
-                                                                onChange={() => handleSelect(product, 'netmed')}
-                                                                className="w-5 h-5 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500 cursor-pointer"
-                                                            />
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <div className="flex items-center gap-4">
-                                                                {product.image ? (
-                                                                    <div className="w-12 h-12 rounded-lg border border-slate-100 bg-white p-1 shrink-0">
-                                                                        <img src={product.image} alt={product.name} className="w-full h-full object-contain" />
-                                                                    </div>
-                                                                ) : (
-                                                                    <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400">
-                                                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                                                                    </div>
-                                                                )}
-                                                                <div className="flex-1 min-w-0">
-                                                                    <div className="font-semibold text-slate-900 group-hover:text-cyan-700 transition-colors break-words">
-                                                                        {product.name}
-                                                                    </div>
-                                                                    <div className="text-sm text-slate-500 mt-0.5">
-                                                                        {product.package || 'N/A'}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <div className="flex flex-col">
-                                                                <span className="text-lg font-bold text-slate-900">₹{product.price}</span>
-                                                                {product.mrp && (
-                                                                    <span className="text-xs text-slate-400 line-through">₹{product.mrp}</span>
-                                                                )}
-                                                                {product.discount && (
-                                                                    <span className="text-xs font-medium text-green-600">
-                                                                        {product.discount}% OFF
-                                                                    </span>
-                                                                )}
-                                                                <span className="text-[10px] text-slate-400 mt-1">
-                                                                    {calculatePricePerUnit(product.package, product.price)
-                                                                        ? `₹${calculatePricePerUnit(product.package, product.price)}/unit`
-                                                                        : ''}
-                                                                </span>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <button
-                                                                onClick={() => product.url && window.open(product.url)}
-                                                                className="p-2 text-cyan-600 hover:bg-cyan-50 rounded-lg transition-colors"
-                                                                title="View on NetMeds"
-                                                                disabled={!product.url}
-                                                            >
-                                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-                                                                </svg>
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            )}
+                                )
+                            })}
                         </div>
+                        <p className="mt-1 text-center text-xs text-stone-400 md:hidden dark:text-stone-500">Swipe to see more pharmacies →</p>
                     </>
                 )}
-            </div>
-        </div >
+            </main>
+
+            {/* Floating selection bar */}
+            {selectedProducts.length > 0 && (
+                <div className="fixed bottom-6 left-1/2 z-40 -translate-x-1/2 animate-rise">
+                    <div className="flex items-center gap-1.5 rounded-full bg-stone-900 py-2 pl-5 pr-2 shadow-2xl shadow-stone-900/30 dark:border dark:border-stone-700 dark:bg-stone-800 dark:shadow-black/50">
+                        <span className="whitespace-nowrap text-sm font-medium text-white">
+                            <span className="font-mono tabular-nums">{selectedProducts.length}</span> selected
+                        </span>
+                        <div className="mx-1.5 h-5 w-px bg-white/20" />
+                        <button
+                            onClick={handleSave}
+                            className="rounded-full px-3.5 py-2 text-sm font-medium text-stone-300 transition-colors duration-150 ease-out hover:bg-white/10 hover:text-white active:scale-95 dark:text-stone-300"
+                        >
+                            Save
+                        </button>
+                        <button
+                            onClick={() => setShowCompareModal(true)}
+                            disabled={selectedProducts.length < 2}
+                            className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-900 transition-[background-color,transform] duration-150 ease-out hover:bg-stone-100 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            Compare
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Compare modal */}
+            <Modal open={showCompareModal} onClose={() => setShowCompareModal(false)} title="Compare medicines" maxWidth="max-w-5xl">
+                <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+                    {selectedProducts.map((product, idx) => (
+                        <DetailCard
+                            key={idx}
+                            product={product}
+                            source={product.source}
+                            onBuy={() => window.open(product.url)}
+                        />
+                    ))}
+                </div>
+            </Modal>
+
+            {/* Saved modal */}
+            <Modal open={showSavedModal} onClose={() => setShowSavedModal(false)} title={`Saved medicines (${savedItems.length})`} maxWidth="max-w-5xl">
+                {savedItems.length === 0 ? (
+                    <div className="py-12 text-center">
+                        <svg className="mx-auto mb-4 h-12 w-12 text-stone-300 dark:text-stone-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                        </svg>
+                        <p className="font-medium text-stone-600 dark:text-stone-300">No saved items yet</p>
+                        <p className="mt-1 text-sm text-stone-400 dark:text-stone-500">Select medicines from results and press Save.</p>
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+                        {savedItems.map((product, idx) => (
+                            <DetailCard
+                                key={idx}
+                                product={product}
+                                source={product.source}
+                                onBuy={() => window.open(product.url)}
+                                onRemove={() => removeSavedItem(product)}
+                            />
+                        ))}
+                    </div>
+                )}
+            </Modal>
+
+            {/* Upload modal */}
+            <Modal open={showUploadModal} onClose={() => setShowUploadModal(false)} title="Upload prescription" maxWidth="max-w-md">
+                {uploading ? (
+                    <div className="flex flex-col items-center gap-3 py-10">
+                        <svg className="h-9 w-9 animate-spin text-emerald-600 dark:text-emerald-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        <p className="text-sm font-medium text-stone-600 dark:text-stone-300">Extracting medicines…</p>
+                    </div>
+                ) : (
+                    <>
+                        <div className="relative flex h-40 w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-stone-300 bg-stone-50 transition-colors duration-150 ease-out hover:border-emerald-300 hover:bg-emerald-50/50 dark:border-stone-700 dark:bg-stone-800/40 dark:hover:border-emerald-500/40 dark:hover:bg-emerald-500/5">
+                            <input
+                                type="file"
+                                accept="image/*"
+                                onChange={handleImageUpload}
+                                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                                aria-label="Upload prescription image"
+                            />
+                            <svg className="h-8 w-8 text-stone-400 dark:text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                            <p className="text-sm font-medium text-stone-500 dark:text-stone-400">Click to upload an image</p>
+                        </div>
+                        <p className="mt-3 text-center text-xs text-stone-400 dark:text-stone-500">Supported formats: JPG, PNG</p>
+                    </>
+                )}
+            </Modal>
+        </div>
     )
 }
 
